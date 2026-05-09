@@ -221,16 +221,30 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '..', 'dist');
 
+console.log(`[Server] Static files path: ${distPath}`);
 if (fs.existsSync(distPath)) {
+  console.log(`[Server] Serving static files from: ${distPath}`);
   app.use(express.static(distPath));
-  app.get('*', (_req, res) => {
-    res.sendFile(path.join(distPath, 'index.html'));
+  app.get('/*', (req, res) => {
+    // Only serve index.html for non-API routes
+    if (!req.path.startsWith('/api')) {
+      res.sendFile(path.join(distPath, 'index.html'));
+    } else {
+      res.status(404).json({ error: 'API route not found' });
+    }
   });
+} else {
+  console.warn(`[Server] Warning: dist/ folder not found at ${distPath}. If this is development, ignore this.`);
 }
 
 // ──── Start Server ─────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 CareSync API server running on http://localhost:${PORT}`);
-  console.log(`📦 Database: server/caresync.db`);
-  console.log(`📋 Full API ready — auth, medications, doses, settings, medical history\n`);
-});
+try {
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 CareSync API server running on port ${PORT}`);
+    console.log(`📦 Database path: server/caresync.db`);
+    console.log(`📋 API and Static serving ready\n`);
+  });
+} catch (err) {
+  console.error('[Server] Failed to start server:', err);
+  process.exit(1);
+}

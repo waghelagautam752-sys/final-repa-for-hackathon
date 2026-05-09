@@ -225,8 +225,8 @@ console.log(`[Server] Static files path: ${distPath}`);
 if (fs.existsSync(distPath)) {
   console.log(`[Server] Serving static files from: ${distPath}`);
   app.use(express.static(distPath));
-  app.get('/:any*', (req, res) => {
-    // Only serve index.html for non-API routes
+  // Catch-all middleware to serve the frontend
+  app.use((req, res) => {
     if (!req.path.startsWith('/api')) {
       res.sendFile(path.join(distPath, 'index.html'));
     } else {

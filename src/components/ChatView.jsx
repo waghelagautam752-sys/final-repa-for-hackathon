@@ -244,7 +244,7 @@ export default function ChatView({ userId }) {
         contentParts = systemPrompt;
       }
 
-      const modelsToTry = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17'];
+      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
       let streamed = false;
 
       for (const modelName of modelsToTry) {

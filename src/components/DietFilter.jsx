@@ -67,7 +67,7 @@ IMPORTANT: At the very end of your response, provide a JSON block enclosed in \`
         parts: [imagePart, { text: prompt }]
       }];
 
-      const modelsToTry = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite-preview-06-17'];
+      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
       let accumulated = '';
       let streamed = false;
 

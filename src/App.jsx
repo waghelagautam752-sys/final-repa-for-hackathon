@@ -2,50 +2,31 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import Login from './Login';
 import ChatView from './components/ChatView';
 import MedExplain from './components/MedExplain';
-import DietFilter from './components/DietFilter';
-import MDReports from './components/MDReports';
 import SettingsView from './components/SettingsView';
-import SymptomChecker from './components/SymptomChecker';
-import MedReminder from './components/MedReminder';
-import HealthLog from './components/HealthLog';
-import BMINutrition from './components/BMINutrition';
 import MedicalHistory from './components/MedicalHistory';
 import {
-  Activity, MessageSquare, Pill, Apple, FileText, Settings,
+  Activity, MessageSquare, Pill, Settings,
   Menu, X, Bell, Clock, Check, CheckCheck, AlertCircle, CalendarCheck, FlaskConical,
-  Stethoscope, BellRing, HeartPulse, Calculator, FolderHeart, Trophy,
+  FolderHeart, Trophy,
 } from 'lucide-react';
 
 const NAV_ITEMS = [
-  { id: 'chat',          label: 'AI Companion',     icon: MessageSquare },
-  { id: 'symptoms',      label: 'Symptom Checker',  icon: Stethoscope },
-  { id: 'med',           label: 'Medications',      icon: Pill },
-  { id: 'reminders',     label: 'Med Reminders',    icon: BellRing },
-  { id: 'healthlog',     label: 'Health Log',       icon: HeartPulse },
-  { id: 'bmi',           label: 'BMI & Nutrition',  icon: Calculator },
-  { id: 'diet',          label: 'Diet Analysis',    icon: Apple },
-  { id: 'reports',       label: 'Health Records',   icon: FileText },
-  { id: 'medhistory',    label: 'Medical History',  icon: FolderHeart },
+  { id: 'chat',          label: 'AI Companion',         icon: MessageSquare },
+  { id: 'med',           label: 'Medications & Alerts', icon: Pill },
+  { id: 'medhistory',    label: 'Records & History',    icon: FolderHeart },
 ];
 
 const PAGE_TITLES = {
-  chat:       'AI Companion',     symptoms: 'Symptom Checker',
-  med:        'Medications',      reminders: 'Med Reminders',
-  healthlog:  'Health Log',       bmi: 'BMI & Nutrition',
-  diet:       'Diet Analysis',    reports: 'Health Records',
-  medhistory: 'Medical History',  settings: 'Settings',
+  chat:       'AI Companion',
+  med:        'Medications & Reminders',
+  medhistory: 'Health Records & Medical History',
+  settings:   'Settings',
 };
 
 const PAGE_SUBTITLES = {
   chat:       'Ask questions about your health and medications',
-  symptoms:   'AI-powered triage and urgency assessment',
-  med:        'Track prescriptions and daily adherence',
-  reminders:  'Set reminders and check drug interactions',
-  healthlog:  'Track mood, sleep, and energy daily',
-  bmi:        'BMI calculator and meal nutrition analysis',
-  diet:       'AI-powered nutritional analysis',
-  reports:    'Appointments, labs, and care timeline',
-  medhistory: 'Secure storage for all your health documents',
+  med:        'Track daily adherence, set reminder alerts, and check drug interactions',
+  medhistory: 'Securely store documents, track vitals, and view your care schedule',
   settings:   'Account, security, and performance settings',
 };
 
@@ -333,13 +314,7 @@ export default function App() {
         {/* Page Content */}
         <div className="flex-1 overflow-y-auto p-4 lg:p-6">
           {activeTab === 'chat'       && <ChatView userId={user?.id} />}
-          {activeTab === 'symptoms'   && <SymptomChecker />}
-          {activeTab === 'med'        && <MedExplain />}
-          {activeTab === 'reminders'  && <MedReminder />}
-          {activeTab === 'healthlog'  && <HealthLog />}
-          {activeTab === 'bmi'        && <BMINutrition />}
-          {activeTab === 'diet'       && <DietFilter />}
-          {activeTab === 'reports'    && <MDReports />}
+          {activeTab === 'med'        && <MedExplain userId={user?.id} />}
           {activeTab === 'medhistory' && <MedicalHistory userId={user?.id} />}
           {activeTab === 'settings'   && (
             <SettingsView

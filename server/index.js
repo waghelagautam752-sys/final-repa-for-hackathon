@@ -8,6 +8,12 @@ import bcrypt from 'bcryptjs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const execPromise = promisify(exec);
 import {
   createUser, getUserByEmail, listUsers,
   getMedicationsByUser, addMedication,
@@ -18,6 +24,37 @@ import {
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+async function convertDocumentToMarkdown(fileBuffer, originalName) {
+  const tempDir = path.join(__dirname, 'temp');
+  if (!fs.existsSync(tempDir)) {
+    fs.mkdirSync(tempDir, { recursive: true });
+  }
+
+  const ext = path.extname(originalName) || '.txt';
+  const tempFileName = `temp_${Date.now()}_${Math.random().toString(36).substring(2, 7)}${ext}`;
+  const tempFilePath = path.join(tempDir, tempFileName);
+
+  try {
+    fs.writeFileSync(tempFilePath, fileBuffer);
+    const { stdout, stderr } = await execPromise(`python -m markitdown "${tempFilePath}"`);
+    if (stderr && stderr.trim()) {
+      console.warn('[Markitdown Warning/Error]:', stderr);
+    }
+    return stdout;
+  } catch (err) {
+    console.error('[Markitdown Execution Failed]:', err);
+    throw new Error(`Failed to convert document: ${err.message}`);
+  } finally {
+    try {
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+    } catch (e) {
+      console.error('[Markitdown Cleanup Failed]:', e);
+    }
+  }
+}
 
 // ──── Middleware ────────────────────────────────────────────────
 app.use(cors());
@@ -171,16 +208,35 @@ app.get('/api/medical-history/:userId', (req, res) => {
   }
 });
 
-app.post('/api/medical-history', (req, res) => {
+app.post('/api/medical-history', async (req, res) => {
   try {
     const { userId, title, category, content, fileName, fileType, fileData, notes } = req.body;
     if (!userId || !title) return res.status(400).json({ error: 'userId and title are required.' });
+
+    let finalContent = content;
+    const buffer = fileData ? Buffer.from(fileData, 'base64') : null;
+
+    // If no text content is provided, but a document file is attached, run markitdown to generate content
+    if (!finalContent && buffer && fileName) {
+      const ext = path.extname(fileName).toLowerCase();
+      const documentExtensions = ['.pdf', '.docx', '.xlsx', '.pptx', '.txt', '.csv', '.doc', '.xls', '.ppt'];
+      if (documentExtensions.includes(ext)) {
+        try {
+          console.log(`[Server] Parsing uploaded file: ${fileName} via markitdown...`);
+          finalContent = await convertDocumentToMarkdown(buffer, fileName);
+          console.log(`[Server] File parsing complete. Converted length: ${finalContent.length}`);
+        } catch (convErr) {
+          console.error('[Server] Failed to auto-parse file to markdown:', convErr);
+        }
+      }
+    }
+
     const result = addMedicalHistory({
       userId, title, category: category || 'general',
-      content: content || null,
+      content: finalContent || null,
       fileName: fileName || null,
       fileType: fileType || null,
-      fileData: fileData ? Buffer.from(fileData, 'base64') : null,
+      fileData: buffer,
       isEncrypted: 1, // flag as encrypted in future
       notes: notes || null,
     });
@@ -188,6 +244,22 @@ app.post('/api/medical-history', (req, res) => {
   } catch (err) {
     console.error('Medical history save error:', err);
     res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// Endpoint to convert general chat attachments to Markdown
+app.post('/api/convert-document', async (req, res) => {
+  try {
+    const { fileName, fileType, fileData } = req.body;
+    if (!fileData) {
+      return res.status(400).json({ error: 'fileData is required.' });
+    }
+    const buffer = Buffer.from(fileData, 'base64');
+    const markdown = await convertDocumentToMarkdown(buffer, fileName || 'document.txt');
+    res.json({ markdown });
+  } catch (err) {
+    console.error('Document conversion route error:', err);
+    res.status(500).json({ error: err.message || 'Internal server error.' });
   }
 });
 
@@ -217,8 +289,6 @@ app.delete('/api/medical-history/:userId/:id', (req, res) => {
 });
 
 // ──── Serve Frontend (Production) ─────────────────────────────
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const distPath = path.join(__dirname, '..', 'dist');
 
 console.log(`[Server] Static files path: ${distPath}`);

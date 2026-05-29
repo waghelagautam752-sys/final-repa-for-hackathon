@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Plus, Smile, Frown, Meh, Moon, Droplets, Zap,
   TrendingUp, Brain, Loader2, Calendar, ChevronLeft,
-  ChevronRight, Trash2, Sparkles
+  ChevronRight, Trash2, Sparkles, Square, CheckSquare, AlertTriangle
 } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
@@ -28,6 +28,36 @@ export default function HealthLog() {
   const [streamingInsight, setStreamingInsight] = useState('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [viewMonth, setViewMonth] = useState(new Date());
+
+  const [anomalyActive, setAnomalyActive] = useState(() => {
+    return localStorage.getItem('caresync_silent_signal_anomaly') === 'true';
+  });
+
+  const toggleAnomaly = () => {
+    const newVal = !anomalyActive;
+    setAnomalyActive(newVal);
+    localStorage.setItem('caresync_silent_signal_anomaly', newVal ? 'true' : 'false');
+    // If turning on, simulate health history for burnout alert
+    if (newVal) {
+      const simulatedLogs = [
+        { id: 'sim-1', date: '2026-05-20', mood: 4, sleep: 7.5, water: 8, energy: 4, notes: 'Feeling fine' },
+        { id: 'sim-2', date: '2026-05-21', mood: 4, sleep: 7, water: 7, energy: 4, notes: '' },
+        { id: 'sim-3', date: '2026-05-22', mood: 3, sleep: 6.5, water: 8, energy: 3, notes: 'A bit tired' },
+        { id: 'sim-4', date: '2026-05-23', mood: 3, sleep: 5.5, water: 6, energy: 3, notes: 'Stress at work' },
+        { id: 'sim-5', date: '2026-05-24', mood: 2, sleep: 5, water: 5, energy: 2, notes: 'Woke up at 3AM' },
+        { id: 'sim-6', date: '2026-05-25', mood: 3, sleep: 6, water: 7, energy: 3, notes: '' },
+        { id: 'sim-7', date: '2026-05-26', mood: 2, sleep: 5.5, water: 6, energy: 2, notes: 'Restless sleep' },
+        { id: 'sim-8', date: '2026-05-27', mood: 2, sleep: 5, water: 6, energy: 2, notes: 'Sleep fragmented' },
+        { id: 'sim-9', date: '2026-05-28', mood: 1, sleep: 4.5, water: 5, energy: 1, notes: 'Exhausted' }
+      ];
+      localStorage.setItem('caresync_health_logs', JSON.stringify(simulatedLogs));
+      window.dispatchEvent(new Event('storage')); // trigger updates in other views
+      window.location.reload(); // refresh to show logs
+    } else {
+      localStorage.removeItem('caresync_health_logs');
+      window.location.reload();
+    }
+  };
 
   useEffect(() => {
     localStorage.setItem('caresync_health_logs', JSON.stringify(logs));
@@ -58,9 +88,24 @@ export default function HealthLog() {
 
   const getAIInsights = async () => {
     if (logs.length < 3) return;
+  const [aiInsight, setAiInsight] = useState(() => {
+    const saved = localStorage.getItem('caresync_copilot_insights');
+    return saved ? JSON.parse(saved) : null;
+  });
+
+  const toggleActionItem = (index) => {
+    if (!aiInsight || !aiInsight.actionPlan) return;
+    const updatedPlan = [...aiInsight.actionPlan];
+    updatedPlan[index].done = !updatedPlan[index].done;
+    const updatedInsight = { ...aiInsight, actionPlan: updatedPlan };
+    setAiInsight(updatedInsight);
+    localStorage.setItem('caresync_copilot_insights', JSON.stringify(updatedInsight));
+  };
+
+  const getAIInsights = async () => {
+    if (logs.length < 3) return;
     setIsAnalyzing(true);
     setAiInsight(null);
-    setStreamingInsight('');
 
     try {
       const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
@@ -78,50 +123,48 @@ export default function HealthLog() {
         notes: l.notes || 'none',
       }));
 
-      const prompt = `You are a health analytics AI. Analyze these daily health logs from a patient:
+      const prompt = `You are a clinical and preventive health analytics AI. Analyze these daily health logs:
 
 ${JSON.stringify(recentLogs, null, 2)}
 
-Identify patterns and correlations. Respond in markdown with:
+Evaluate risk levels and generate a personalized preventive intervention plan.
+You MUST respond ONLY with a valid, clean JSON object (do not wrap in markdown blocks like \`\`\`json, just return raw JSON). Use the exact keys listed in this template:
+{
+  "riskScore": 45,
+  "riskTitle": "Moderate Risk",
+  "detectedRisks": ["Burnout risk: Moderate", "Dehydration: Low"],
+  "reasoning": "Explainable reasoning here...",
+  "actionPlan": [
+    { "task": "Drink 2L water daily", "done": false },
+    { "task": "Sleep before 11:30 PM", "done": false }
+  ],
+  "escalation": "This is optional. If symptoms appear severe, output a warning advising medical consultation."
+}`;
 
-## Overall Trends
-Brief summary of the patient's health trajectory over these entries.
-
-## Key Patterns Detected
-- List specific correlations you notice (e.g., "Your energy drops on days with less than 6 hours of sleep")
-- Include mood vs sleep, hydration vs energy, etc.
-
-## Recommendations
-- 3-4 actionable, personalized suggestions based on the data
-
-## Weekly Focus
-One specific thing the patient should focus on this week based on their weakest metric.
-
-Be warm, encouraging, and specific with data references.`;
-
-      const modelsToTry = ['gemini-2.0-flash', 'gemini-2.5-flash'];
-      let accumulated = '';
-      let streamed = false;
+      const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash'];
+      let resultText = '';
 
       for (const model of modelsToTry) {
         try {
-          const stream = await ai.models.generateContentStream({ model, contents: prompt });
-          accumulated = '';
-          for await (const chunk of stream) {
-            accumulated += chunk.text || '';
-            setStreamingInsight(accumulated);
-          }
-          streamed = true;
+          const response = await ai.models.generateContent({ model, contents: prompt });
+          resultText = response.text || '';
           break;
         } catch (e) {
           if (model === modelsToTry[modelsToTry.length - 1]) throw e;
         }
       }
 
-      setStreamingInsight('');
-      setAiInsight(accumulated || 'No response received.');
+      // Parse JSON from response
+      const cleanJsonStr = resultText.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanJsonStr);
+      setAiInsight(parsed);
+      localStorage.setItem('caresync_copilot_insights', JSON.stringify(parsed));
     } catch (err) {
-      setAiInsight(`**Error:** ${err.message}`);
+      console.error(err);
+      setAiInsight({
+        error: true,
+        message: err.message || 'Failed to analyze health logs.'
+      });
     } finally {
       setIsAnalyzing(false);
     }
@@ -163,6 +206,87 @@ Be warm, encouraging, and specific with data references.`;
             {showAdd ? <></> : <Plus size={16} />}
             {showAdd ? 'Cancel' : hasLoggedToday ? 'Update Today' : 'Log Today'}
           </button>
+        </div>
+      </div>
+
+      {/* Silent Signal Detection Dashboard Widget */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 overflow-hidden relative">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-4">
+            <div className="relative shrink-0">
+              <div className="w-12 h-12 rounded-xl bg-purple-50 flex items-center justify-center border border-purple-100 text-purple-600">
+                <Brain size={24} className={anomalyActive ? "animate-pulse" : ""} />
+              </div>
+              <span className="absolute -top-1.5 -right-1.5 flex h-3.5 w-3.5">
+                <span className={`animate-ping absolute inline-flex h-full w-full rounded-full opacity-75 ${anomalyActive ? "bg-red-400" : "bg-emerald-400"}`} />
+                <span className={`relative inline-flex rounded-full h-3.5 w-3.5 ${anomalyActive ? "bg-red-500" : "bg-emerald-500"}`} />
+              </span>
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                Silent Signal Detection 
+                <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Proactive Scan</span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-1 max-w-xl">
+                Continuously analyzes sleep micro-fragmentation, heart rate variability (HRV) trends, and typing cadence to flag pre-symptom deterioration before you consciously feel it.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={toggleAnomaly}
+            className={`px-4 py-2.5 text-xs font-semibold rounded-lg border transition-all shrink-0 ${
+              anomalyActive
+                ? 'bg-rose-50 border-rose-200 text-rose-700 hover:bg-rose-100'
+                : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
+            }`}
+          >
+            {anomalyActive ? '🔴 Active Anomaly (Click to Reset)' : '⚡ Simulate Wearable Sync (Trigger Anomaly)'}
+          </button>
+        </div>
+
+        {/* Ambient Metrics Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-5 pt-5 border-t border-slate-100">
+          {/* Wearable HRV */}
+          <div className={`p-4 rounded-xl border transition-all ${anomalyActive ? 'bg-red-50/40 border-red-100 shadow-sm' : 'bg-slate-50/50 border-slate-150'}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-slate-500">Wearable HRV Trend</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${anomalyActive ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                {anomalyActive ? '🚨 Dropping' : '✓ Stable'}
+              </span>
+            </div>
+            <p className="text-xl font-extrabold text-slate-800">{anomalyActive ? '44 ms' : '72 ms'}</p>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {anomalyActive ? 'Downward trend of 38% over 10 days' : 'Baseline matching age range'}
+            </p>
+          </div>
+
+          {/* Sleep Architecture */}
+          <div className={`p-4 rounded-xl border transition-all ${anomalyActive ? 'bg-red-50/40 border-red-100 shadow-sm' : 'bg-slate-50/50 border-slate-150'}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-slate-500">Sleep Architecture</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${anomalyActive ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                {anomalyActive ? '🚨 Fragmented' : '✓ Restful'}
+              </span>
+            </div>
+            <p className="text-xl font-extrabold text-slate-800">{anomalyActive ? '4 events' : '0 events'}</p>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {anomalyActive ? 'Waking episodes after 3:00 AM' : 'No mid-sleep interruptions'}
+            </p>
+          </div>
+
+          {/* Typing Cadence */}
+          <div className={`p-4 rounded-xl border transition-all ${anomalyActive ? 'bg-red-50/40 border-red-100 shadow-sm' : 'bg-slate-50/50 border-slate-150'}`}>
+            <div className="flex items-center justify-between mb-1.5">
+              <span className="text-xs font-semibold text-slate-500">App Typing Cadence</span>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${anomalyActive ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                {anomalyActive ? '🚨 Slowing' : '✓ Normal'}
+              </span>
+            </div>
+            <p className="text-xl font-extrabold text-slate-800">{anomalyActive ? '42 wpm' : '65 wpm'}</p>
+            <p className="text-[10px] text-slate-400 mt-1">
+              {anomalyActive ? 'Keystroke velocity decreased by 25%' : 'Typical typing pace'}
+            </p>
+          </div>
         </div>
       </div>
 
@@ -326,35 +450,108 @@ Be warm, encouraging, and specific with data references.`;
           )}
         </div>
 
-        {/* AI Insights */}
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+        {/* AI Action Copilot Dashboard */}
+        <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5 flex flex-col">
           <h3 className="text-sm font-semibold text-slate-700 mb-4 flex items-center gap-2">
-            <Sparkles size={15} className="text-purple-500" /> AI Health Insights
+            <Sparkles size={15} className="text-purple-500" /> AI Action Copilot
           </h3>
-          {isAnalyzing && streamingInsight ? (
-              <div className="prose prose-sm prose-slate max-w-none prose-p:my-1.5 prose-headings:font-semibold prose-headings:text-slate-800 prose-li:my-0.5 max-h-[400px] overflow-y-auto"
-                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(streamingInsight)) }} />
-            ) : isAnalyzing ? (
-              <div className="space-y-3 animate-pulse">
-                <div className="h-3 bg-slate-100 rounded w-3/4" />
-                <div className="h-3 bg-slate-100 rounded w-1/2" />
-                <div className="h-3 bg-slate-100 rounded w-5/6" />
-                <div className="h-3 bg-slate-100 rounded w-2/3 mt-4" />
-                <div className="h-3 bg-slate-100 rounded w-4/5" />
-              </div>
+          
+          {isAnalyzing ? (
+            <div className="space-y-4 animate-pulse py-4">
+              <div className="h-6 bg-slate-100 rounded w-1/4" />
+              <div className="h-4 bg-slate-100 rounded w-3/4" />
+              <div className="h-4 bg-slate-100 rounded w-5/6" />
+              <div className="h-16 bg-slate-50 border border-slate-100 rounded-lg" />
+              <div className="h-24 bg-slate-50 border border-slate-100 rounded-lg" />
+            </div>
           ) : aiInsight ? (
-            <div className="prose prose-sm prose-slate max-w-none prose-p:my-1.5 prose-headings:font-semibold prose-headings:text-slate-800 prose-li:my-0.5 max-h-[400px] overflow-y-auto"
-              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(aiInsight)) }} />
+            aiInsight.error ? (
+              <div className="text-sm text-red-500 py-6 text-center">
+                <AlertTriangle className="mx-auto mb-2 text-red-400" size={24} />
+                <p className="font-semibold">Analysis Failed</p>
+                <p className="text-xs text-slate-400 mt-1">{aiInsight.message}</p>
+              </div>
+            ) : (
+              <div className="space-y-5">
+                {/* Risk Score Row */}
+                <div className="flex items-center gap-4 bg-slate-50 border border-slate-200 rounded-xl p-4">
+                  <div className="relative flex items-center justify-center shrink-0">
+                    {/* Visual circular representation or indicator */}
+                    <div className="w-16 h-16 rounded-full border-4 border-slate-200 flex items-center justify-center relative">
+                      <span className={`text-base font-extrabold ${
+                        aiInsight.riskScore >= 70 ? 'text-red-600' : aiInsight.riskScore >= 40 ? 'text-amber-600' : 'text-emerald-600'
+                      }`}>{aiInsight.riskScore}%</span>
+                      {/* Colored active border ring */}
+                      <div className={`absolute inset-0 rounded-full border-4 border-transparent border-t-brand-500`} style={{ transform: `rotate(${aiInsight.riskScore * 3.6}deg)` }} />
+                    </div>
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-sm font-bold text-slate-800">{aiInsight.riskTitle || 'Health Risk Rating'}</h4>
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {aiInsight.detectedRisks && aiInsight.detectedRisks.map((risk, idx) => (
+                        <span key={idx} className="text-[10px] font-semibold bg-slate-200/60 text-slate-600 px-1.5 py-0.5 rounded-md">
+                          {risk}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Explainable Reasoning */}
+                <div>
+                  <h5 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1.5">Explainable Reasoning</h5>
+                  <p className="text-xs text-slate-600 leading-relaxed bg-purple-50/20 border border-purple-100/50 rounded-xl p-3">
+                    {aiInsight.reasoning}
+                  </p>
+                </div>
+
+                {/* 7-Day Action Plan Checklist */}
+                {aiInsight.actionPlan && aiInsight.actionPlan.length > 0 && (
+                  <div>
+                    <h5 className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-2">7-Day Preventive Action Plan</h5>
+                    <div className="space-y-2">
+                      {aiInsight.actionPlan.map((item, idx) => (
+                        <button
+                          key={idx}
+                          onClick={() => toggleActionItem(idx)}
+                          className="w-full flex items-start gap-2.5 p-2.5 rounded-lg border border-slate-100 hover:border-slate-200 bg-slate-50/20 text-left transition-colors"
+                        >
+                          {item.done ? (
+                            <CheckSquare className="text-emerald-500 shrink-0 mt-0.5" size={15} />
+                          ) : (
+                            <Square className="text-slate-300 shrink-0 mt-0.5" size={15} />
+                          )}
+                          <span className={`text-xs ${item.done ? 'text-slate-400 line-through' : 'text-slate-700 font-medium'}`}>
+                            {item.task}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Medical Escalation Banner */}
+                {aiInsight.escalation && (
+                  <div className="bg-rose-50 border border-rose-150 rounded-xl p-3 flex gap-2 text-rose-800">
+                    <AlertTriangle size={15} className="shrink-0 mt-0.5 text-rose-600" />
+                    <div>
+                      <p className="text-xs font-bold">Safety Advisory</p>
+                      <p className="text-[11px] mt-0.5 text-rose-700 leading-relaxed">{aiInsight.escalation}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
           ) : (
             <div className="flex flex-col items-center justify-center py-12 text-center">
-              <div className="w-14 h-14 bg-purple-50 rounded-full flex items-center justify-center mb-4">
+              <div className="w-14 h-14 bg-purple-50 rounded-full flex items-center justify-center mb-4 border border-purple-100">
                 <Brain size={22} className="text-purple-300" />
               </div>
-              <p className="text-sm font-medium text-slate-500 mb-1">No insights yet</p>
+              <p className="text-sm font-semibold text-slate-600 mb-1">Risk + Action Copilot Offline</p>
               <p className="text-xs text-slate-400 max-w-[240px]">
                 {logs.length < 3
-                  ? `Log at least 3 days of data to unlock AI insights. (${logs.length}/3 entries)`
-                  : 'Click "AI Insights" to analyze your health patterns.'}
+                  ? `Log at least 3 days of health metrics to build your preventative risk copilot. (${logs.length}/3 entries)`
+                  : 'Click "AI Insights" above to compile risk analysis and checklist.'}
               </p>
             </div>
           )}

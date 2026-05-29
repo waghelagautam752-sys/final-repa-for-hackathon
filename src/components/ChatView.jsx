@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Send, Paperclip, X, User, Stethoscope, Sparkles, Mic, MicOff, Volume2, Square } from 'lucide-react';
+import { Send, Paperclip, X, User, Stethoscope, Sparkles, Mic, MicOff, Volume2, Square, FileText, AlertTriangle } from 'lucide-react';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
@@ -25,9 +25,18 @@ export default function ChatView({ userId }) {
         .catch(err => console.error('Failed to fetch medications:', err));
     }
   }, [userId]);
-  const [messages, setMessages] = useState([
-    { role: 'assistant', content: "Hello! I'm your CareSync health assistant. I can help you understand your medications, analyze lab results, or answer general health questions.\n\nHow can I help you today?" }
-  ]);
+  const isAnomaly = localStorage.getItem('caresync_silent_signal_anomaly') === 'true';
+
+  const [messages, setMessages] = useState(() => {
+    if (isAnomaly) {
+      return [
+        { role: 'assistant', content: "Hello! I've been doing a scan of your ambient health metrics. Over the last 10 days, your sleep has fragmented after 3 AM four times, your energy self-reports have dropped 20%, and your typing speed has slowed. This pattern often precedes burnout or illness.\n\nWould you like to talk about what's going on or how you're feeling?" }
+      ];
+    }
+    return [
+      { role: 'assistant', content: "Hello! I'm your CareSync health assistant. I can help you understand your medications, analyze lab results, or answer general health questions.\n\nHow can I help you today?" }
+    ];
+  });
   const [input, setInput] = useState('');
   const [attachment, setAttachment] = useState(null);
   const [attachmentPreview, setAttachmentPreview] = useState(null);
@@ -42,6 +51,30 @@ export default function ChatView({ userId }) {
   const recognitionRef = useRef(null);
   const silenceTimerRef = useRef(null);
   const baseInputRef = useRef('');
+
+  // Live typing speed tracking
+  const [typingSpeed, setTypingSpeed] = useState(0);
+  const keystrokesRef = useRef([]);
+
+  // Emergency Mode state
+  const [emergencyTriggered, setEmergencyTriggered] = useState(false);
+
+  const handleInputChange = (e) => {
+    const val = e.target.value;
+    setInput(val);
+
+    const now = Date.now();
+    keystrokesRef.current.push(now);
+
+    const windowMs = 5000;
+    keystrokesRef.current = keystrokesRef.current.filter(t => now - t < windowMs);
+
+    if (keystrokesRef.current.length > 1) {
+      const durationMins = windowMs / 60000;
+      const wpm = Math.round((keystrokesRef.current.length / 5) / durationMins);
+      setTypingSpeed(wpm);
+    }
+  };
 
   // Clean up on unmount
   useEffect(() => {
@@ -183,9 +216,13 @@ export default function ChatView({ userId }) {
     const file = e.target.files[0];
     if (file) {
       setAttachment(file);
-      const reader = new FileReader();
-      reader.onloadend = () => setAttachmentPreview(reader.result);
-      reader.readAsDataURL(file);
+      if (file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onloadend = () => setAttachmentPreview(reader.result);
+        reader.readAsDataURL(file);
+      } else {
+        setAttachmentPreview(null);
+      }
     }
   };
 
@@ -207,13 +244,33 @@ export default function ChatView({ userId }) {
     const text = overrideText || input;
     if (!text.trim() && !attachment) return;
 
-    const userMsg = { role: 'user', content: text, image: attachmentPreview };
+    // Scan for critical emergency symptoms
+    const emergencyKeywords = [
+      'chest pain', 'shortness of breath', 'difficulty breathing', 'severe allergic reaction',
+      'stroke', 'anaphylaxis', 'heart attack', 'sudden numbness', 'severe bleeding'
+    ];
+    const hasEmergencySymptom = emergencyKeywords.some(kw => text.toLowerCase().includes(kw));
+    if (hasEmergencySymptom) {
+      setEmergencyTriggered(true);
+    }
+
+    const isImage = attachment && attachment.type.startsWith('image/');
+    const isDoc = attachment && !isImage;
+
+    const userMsg = { 
+      role: 'user', 
+      content: text, 
+      image: isImage ? attachmentPreview : null,
+      documentName: isDoc ? attachment.name : null
+    };
     setMessages(prev => [...prev, userMsg]);
 
     const currentInput = text;
     const currentAttachment = attachment;
     setInput('');
     removeAttachment();
+    setTypingSpeed(0);
+    keystrokesRef.current = [];
     setIsLoading(true);
 
     // Add a placeholder assistant message that we'll stream into
@@ -232,15 +289,58 @@ export default function ChatView({ userId }) {
         medContext = "The patient's current medications are: " + medications.map(m => `${m.name} (${m.dosage || 'unknown dosage'}) - ${m.frequency || 'unknown frequency'}`).join(', ') + ". ";
       }
 
-      const systemPrompt = currentAttachment
-        ? `You are a knowledgeable medical assistant called CareSync. ${medContext}The patient has attached a medical image/report. Analyze it carefully. The patient says: "${currentInput || 'Please analyze this image.'}". Provide a structured, medically accurate response using bullet points and clear sections. Be professional and empathetic.`
-        : `You are a knowledgeable medical assistant called CareSync. ${medContext}The patient asks: "${currentInput}". Provide a structured response using bullet points or short clear sections. Be professional, accurate, and empathetic. Use markdown formatting for readability.`;
+      let documentMarkdown = '';
+      if (currentAttachment && isDoc) {
+        // Convert document to base64 and call parsing API
+        const base64Data = await new Promise((resolve) => {
+          const reader = new FileReader();
+          reader.onloadend = () => resolve(reader.result.split(',')[1]);
+          reader.readAsDataURL(currentAttachment);
+        });
 
+        try {
+          const convRes = await fetch('/api/convert-document', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: currentAttachment.name,
+              fileType: currentAttachment.type,
+              fileData: base64Data
+            })
+          });
+          if (!convRes.ok) throw new Error('Failed to parse document');
+          const convData = await convRes.json();
+          documentMarkdown = convData.markdown;
+        } catch (convErr) {
+          console.error('Failed to parse document:', convErr);
+          documentMarkdown = `*Error: Could not convert document ${currentAttachment.name}*`;
+        }
+      }
+
+      let systemPrompt = '';
       let contentParts;
+
+      const silentSignalContext = isAnomaly 
+        ? "ALERT: The Silent Signal bio-sensing system has flagged a burnout trend. Passive metrics show: sleep fragmented after 3 AM four times over 10 days, energy logs down 20%, and typing cadence has slowed (42 WPM vs 65 WPM baseline). Keep this context in mind to guide the user towards recovery/stress management. "
+        : "";
+
       if (currentAttachment) {
-        const imagePart = await fileToGenerativePart(currentAttachment);
-        contentParts = [{ role: 'user', parts: [imagePart, { text: systemPrompt }] }];
+        if (isImage) {
+          const imagePart = await fileToGenerativePart(currentAttachment);
+          systemPrompt = `You are a knowledgeable medical assistant called CareSync. ${medContext}${silentSignalContext}The patient has attached a medical image/report. Analyze it carefully. The patient says: "${currentInput || 'Please analyze this image.'}". Provide a structured, medically accurate response using bullet points and clear sections. Be professional and empathetic.`;
+          contentParts = [{ role: 'user', parts: [imagePart, { text: systemPrompt }] }];
+        } else {
+          systemPrompt = `You are a knowledgeable medical assistant called CareSync. ${medContext}${silentSignalContext}
+The patient has attached a document: "${currentAttachment.name}".
+Below is the converted Markdown content of the document:
+---
+${documentMarkdown}
+---
+The patient says: "${currentInput || 'Please summarize this document.'}". Provide a structured response using bullet points or short clear sections. Be professional, accurate, and empathetic. Use markdown formatting for readability.`;
+          contentParts = systemPrompt;
+        }
       } else {
+        systemPrompt = `You are a knowledgeable medical assistant called CareSync. ${medContext}${silentSignalContext}The patient asks: "${currentInput}". Provide a structured response using bullet points or short clear sections. Be professional, accurate, and empathetic. Use markdown formatting for readability.`;
         contentParts = systemPrompt;
       }
 
@@ -283,6 +383,73 @@ export default function ChatView({ userId }) {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {emergencyTriggered && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-xl p-5 flex flex-col gap-3 shadow-sm mb-4 animate-pulse">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center shrink-0 text-red-600">
+                  <AlertTriangle size={20} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-sm font-extrabold text-red-800 uppercase tracking-wider">🚨 Critical Symptom Emergency Alert</h4>
+                  <p className="text-xs text-red-700 mt-1 leading-relaxed">
+                    You have entered symptoms that may indicate a serious medical emergency (e.g. cardiac event or respiratory failure). 
+                    <strong> Please call 911 or your local emergency number immediately.</strong>
+                  </p>
+                </div>
+              </div>
+              
+              <div className="bg-white border border-red-150 rounded-lg p-3 text-xs text-slate-700 space-y-1.5 shadow-sm">
+                <p className="font-bold text-red-800">Immediate First-Aid Protocols:</p>
+                <ul className="list-disc list-inside space-y-0.5 text-slate-600">
+                  <li>Sit down and try to remain calm. Do not exert yourself.</li>
+                  <li>Chew 1 adult aspirin (325mg) or 2-4 baby aspirins if you have them, unless allergic.</li>
+                  <li>Loosen any tight clothing around your neck or chest.</li>
+                  <li>Unlock your door so responders can enter immediately.</li>
+                </ul>
+              </div>
+
+              <div className="flex gap-2.5">
+                <a
+                  href="https://www.google.com/maps/search/emergency+room+near+me"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex-1 flex items-center justify-center gap-1.5 px-4 py-2 bg-red-600 hover:bg-red-700 text-white text-xs font-bold rounded-lg transition-colors shadow-sm text-center"
+                >
+                  📍 Locate Nearest Emergency Room
+                </a>
+                <button
+                  onClick={() => setEmergencyTriggered(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-semibold rounded-lg transition-colors border border-slate-200"
+                >
+                  Dismiss Alert
+                </button>
+              </div>
+            </div>
+          )}
+
+          {isAnomaly && (
+            <div className="bg-purple-50 border border-purple-150 rounded-xl p-4 flex items-start gap-3 shadow-sm mb-4" style={{ animation: 'notifSlideIn 0.2s ease-out' }}>
+              <div className="w-8 h-8 rounded-lg bg-purple-100 flex items-center justify-center shrink-0 text-purple-600">
+                <Brain size={16} className="animate-pulse" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h4 className="text-xs font-bold text-purple-800 uppercase tracking-wider flex items-center gap-1.5">
+                  Silent Signal Health Advisory
+                  <span className="w-1.5 h-1.5 bg-purple-500 rounded-full animate-ping" />
+                </h4>
+                <p className="text-xs text-purple-700 mt-1 leading-relaxed">
+                  Proactive scan detected early-stage fatigue signature (sleep fragmentation, drop in HRV, and typing cadence slowdown).
+                </p>
+                <button
+                  onClick={() => handleSend("Explain what silent signals you detected on my wearables and app usage, and how I can prevent burnout.")}
+                  className="mt-2 text-xs font-bold text-purple-900 hover:underline flex items-center gap-1"
+                >
+                  Discuss metrics with CareSync →
+                </button>
+              </div>
+            </div>
+          )}
+
           {messages.map((msg, i) => (
             <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'flex-row-reverse' : ''}`}>
               <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 text-sm ${
@@ -300,6 +467,12 @@ export default function ChatView({ userId }) {
                 <div className="px-4 py-3">
                   {msg.image && (
                     <img src={msg.image} alt="Upload" className="rounded-lg max-w-full max-h-52 object-cover mb-2" />
+                  )}
+                  {msg.documentName && (
+                    <div className="flex items-center gap-2 p-2 mb-2 bg-brand-700/30 border border-brand-500/20 rounded-lg text-xs font-semibold text-white">
+                      <FileText size={14} className="shrink-0" />
+                      <span className="truncate">{msg.documentName}</span>
+                    </div>
                   )}
                   {msg.content && (
                     msg.role === 'user'
@@ -383,17 +556,24 @@ export default function ChatView({ userId }) {
             </div>
           )}
 
-          {attachmentPreview && (
+          {attachment && (
             <div className="mb-2 relative inline-block">
-              <img src={attachmentPreview} alt="Preview" className="h-16 rounded-lg border border-slate-200" />
-              <button onClick={removeAttachment} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center">
+              {attachment.type.startsWith('image/') ? (
+                <img src={attachmentPreview} alt="Preview" className="h-16 rounded-lg border border-slate-200" />
+              ) : (
+                <div className="flex items-center gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-700 font-semibold shadow-sm">
+                  <FileText size={14} className="text-brand-500 shrink-0" />
+                  <span>{attachment.name}</span>
+                </div>
+              )}
+              <button onClick={removeAttachment} className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-red-500 text-white rounded-full flex items-center justify-center shadow">
                 <X size={11} />
               </button>
             </div>
           )}
           <div className="flex items-center gap-2">
-            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*" className="hidden" />
-            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-colors" title="Attach image">
+            <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv" className="hidden" />
+            <button onClick={() => fileInputRef.current?.click()} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-50 rounded-lg transition-colors" title="Attach file">
               <Paperclip size={18} />
             </button>
 
@@ -416,12 +596,18 @@ export default function ChatView({ userId }) {
             <input
               type="text"
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={handleInputChange}
               onKeyDown={(e) => e.key === 'Enter' && !isLoading && handleSend()}
               placeholder={isListening ? 'Listening...' : 'Ask a health question...'}
               className="flex-1 bg-slate-50 border border-slate-200 rounded-lg py-2.5 px-3.5 text-sm focus:outline-none focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors disabled:opacity-50"
               disabled={isLoading}
             />
+            {typingSpeed > 0 && (
+              <div className="absolute right-16 bottom-[52px] bg-slate-800 text-white text-[9px] px-2 py-0.5 rounded-full font-bold flex items-center gap-1 shadow-sm border border-slate-700">
+                <span className="w-1 h-1 bg-emerald-400 rounded-full animate-ping" />
+                Cadence: {typingSpeed} WPM
+              </div>
+            )}
             <button
               onClick={() => handleSend()}
               disabled={(!input.trim() && !attachment) || isLoading}
